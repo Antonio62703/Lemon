@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>When life gives you lemons</title>
+  <style>
+    @font-face { font-family: "Gaisyr"; src: url("ABCGaisyr-Regular-Trial.woff") format("woff"); font-weight: 400; font-style: normal; font-display: block; }
+    @font-face { font-family: "Gaisyr Light Italic"; src: url("ABCGaisyr-LightItalic-Trial.woff") format("woff"); font-weight: 300; font-style: italic; font-display: block; }
+    html, body { height: 100%; margin: 0; }
+    body { background: #ffffff; color: #000000; overflow: hidden; display: flex; flex-direction: column; padding: 0 16px; box-sizing: border-box; }
+    h1 { margin: 0; padding-top: 6vh; text-align: center; font-family: "Gaisyr", "Helvetica Neue", Helvetica, Arial, sans-serif; font-weight: 400; font-size: clamp(18px, 3vw, 28px); letter-spacing: -0.01em; }
+    #holder { width: 100%; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; touch-action: none; }
+    #holder canvas { display: block; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+</head>
+<body>
+  <h1>When life gives you lemons</h1>
+  <div id="holder"></div>
+  <script>
+    const detail = 120;
+    let proportion = 1.0;
+    let zoom;
+    let rseed = 100;
+    const sliceW = new Array(detail).fill(190);
+    const sliceH = new Array(detail).fill(250);
+    const offsets = new Array(detail).fill(0);
+    let selected = -1, hovered = -1, shown = 0;
+    let MV = null, PM = null;
+    let pressX = 0, pressY = 0;
+    const SLIDE = 90;
+    const phrases = [
+      'Make lemonade.',
+      'Plant a lemon tree.',
+      'Make something sweeter.',
+      'Add sugar.',
+      'Start a lemon business.',
+      'Learn to love sour things.',
+      'Make lemon pie.',
+      'Throw them back',
+      'Stop expecting oranges.',
+      'Ask who it came from',
+      'Share them with someone who likes sour foods.',
+      'Learn to love sour things.',
+      'Start a lemon cult.',
+      'Except oranges next time'
+    ];
+    let labels = [];
+
+    const LABEL_PX = 240;   // texture width; 0.25 scale makes it 60 units on the slice
+    const FONT_PX = 32;     // 32px at 0.25 scale = 8 units tall
+    const LINE_PX = 40;
+
+    function makeLabel(txt) {
+      const fam = '"Gaisyr Light Italic", "Helvetica Neue", Helvetica, Arial, sans-serif';
+      const m = document.createElement('canvas').getContext('2d');
+      m.font = 'italic 300 ' + FONT_PX + 'px ' + fam;
+      const lines = [];
+      let cur = '';
+      for (const word of txt.split(' ')) {
+        const test = cur ? cur + ' ' + word : word;
+        if (m.measureText(test).width > LABEL_PX - 8 && cur) { lines.push(cur); cur = word; }
+        else cur = test;
+      }
+      if (cur) lines.push(cur);
+      const texH = lines.length * LINE_PX + 8;
+      const g = createGraphics(LABEL_PX, texH);
+      g.pixelDensity(2);
+      g.clear();
+      const ctx = g.drawingContext;
+      ctx.font = 'italic 300 ' + FONT_PX + 'px ' + fam;
+      ctx.fillStyle = '#d9a800';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      lines.forEach((l, k) => ctx.fillText(l, LABEL_PX / 2, 4 + LINE_PX * (k + 0.5)));
+      return { g, w: LABEL_PX * 0.25, h: texH * 0.25 };
+    }
+
+    function captureMatrices() {
+      const r = _renderer;
+      if (r.uMVMatrix) MV = r.uMVMatrix.copy().mat4;
+      else if (r.uViewMatrix && r.uModelMatrix) MV = r.uViewMatrix.copy().mult(r.uModelMatrix).mat4;
+      PM = r.uPMatrix.copy().mat4;
+    }
+
+    function mulVec(m, v) {
+      const o = [0, 0, 0, 0];
+      for (let r = 0; r < 4; r++) o[r] = m[r] * v[0] + m[4 + r] * v[1] + m[8 + r] * v[2] + m[12 + r] * v[3];
+      return o;
+    }
+
+    function project(x, y, z) {
+      const c = mulVec(PM, mulVec(MV, [x, y, z, 1]));
+      if (c[3] <= 0) return null;
+      return { sx: (c[0] / c[3] * 0.5 + 0.5) * width, sy: (1 - (c[1] / c[3] * 0.5 + 0.5)) * height, d: c[2] / c[3] };
+    }
+
+    function pickSlice(mx, my) {
+      if (!MV || !PM) return -1;
+      const step = TAU / detail;
+      let best = -1, bestD = Infinity;
+      for (let i = 0; i < shown; i++) {
+        const a = (i + 1.5) * step;
+        for (let k = -3; k <= 3; k++) {
+          const t = k * PI / 8;
+          const x = sliceW[i] / 2 * cos(t) + offsets[i];
+          const y = sliceH[i] / 2 * sin(t);
+          const p = project(x * cos(a), y, -x * sin(a));
+          if (!p) continue;
+          const dist = Math.hypot(p.sx - mx, p.sy - my);
+          if (dist < 9 && p.d < bestD) { bestD = p.d; best = i; }
+        }
+      }
+      return best;
+    }
+
+    function onCanvas() { return mouseX >= 0 && mouseY >= 0 && mouseX <= width && mouseY <= height; }
+    function mousePressed() { pressX = mouseX; pressY = mouseY; }
+    function mouseReleased() {
+      if (mouseButton !== LEFT || !onCanvas() || Math.hypot(mouseX - pressX, mouseY - pressY) > 5) return;
+      const i = pickSlice(mouseX, mouseY);
+      selected = (i === selected) ? -1 : i;
+    }
+    const holder = document.getElementById('holder');
+    function reseed() { noiseSeed(random(1000)); rseed = random(1000); }
+
+    function setup() {
+      const lim = Math.min(holder.clientWidth, holder.clientHeight) || 600;
+      const c = createCanvas(lim, lim, WEBGL);
+      c.parent('holder');
+      strokeCap(SQUARE);
+      zoom = height / 420;
+     
+
+    function windowResized() {
+      const lim = Math.min(holder.clientWidth, holder.clientHeight) || 600;
+      resizeCanvas(lim, lim);
+      zoom = height / 420;
+    }
+
+    function draw() {
+      randomSeed(rseed);
+      // only the left button turns the lemon
+      if (!mouseIsPressed || mouseButton === LEFT) orbitControl(1, 1, 0);
+      rotateZ(PI / 12);
+      scale(zoom);
+      clear();
+      captureMatrices();
+
+      const H = 250;
+
+      // flesh
+      push();
+      strokeWeight(2 * zoom);
+      proportion = lerp(proportion, 1.1, 0.1);
+      let last = floor(detail * proportion);
+      last = min(last, detail);
+      shown = last;
+      hovered = onCanvas() && !mouseIsPressed ? pickSlice(mouseX, mouseY) : -1;
+      holder.style.cursor = hovered >= 0 ? 'pointer' : 'grab';
+      for (let j = 0; j < detail; j++) offsets[j] = lerp(offsets[j], j === selected ? SLIDE : 0, 0.15);
+      for (let i = 0; i < last; i++) {
+        let ay = map(i, 0, detail, 0, TAU);
+        let ax = random(-PI / 6, PI / 6);
+        let bulge = 18 * noise(i / 30) * sin(ay);
+        let w = 190 + bulge;
+        let h = H + bulge / 3;
+        sliceW[i] = w; sliceH[i] = h;
+        rotateY(TAU / detail);
+        push();
+        translate(offsets[i], 0, 0);
+        if (i === hovered || i === selected) strokeWeight(4 * zoom);
+
+        // flesh
+        fill(255, 244, 170);
+        stroke(random(232, 252), random(186, 208), 24, 220);
+        arc(0, 0, w, h, -HALF_PI, HALF_PI, OPEN, 50);
+
+        // text on slices
+        if (offsets[i] > 4 && labels.length) {
+          push();
+          noStroke();
+          tint(255, constrain(offsets[i] / SLIDE, 0, 1) * 255);
+          const lb = labels[i % labels.length];
+          texture(lb.g);
+          translate(w * 0.3, 0, 1.5);
+          plane(lb.w, lb.h);
+          translate(0, 0, -3);
+          rotateY(PI);
+          plane(lb.w, lb.h);
+          pop();
+        }
+
+        // white pith and segment membranes (left off a pulled-out slice so its label reads clearly)
+        noFill();
+        const pithCol = [255, 252, 235, 170];
+        const membraneCol = [random(240, 255), random(220, 236), 150, 110];
+        if (offsets[i] <= 4) {
+          stroke(...pithCol);
+          arc(0, 0, w * 0.88, h * 0.9, -HALF_PI * 0.92, HALF_PI * 0.92, OPEN, 50);
+          stroke(...membraneCol);
+          arc(0, 0, w * 0.55, h * 0.8, -HALF_PI * 0.85, HALF_PI * 0.85, OPEN, 40);
+        }
+
+        // rind, with a green blush toward one end
+        rotateY(TAU / detail);
+        stroke(random(150, 200), random(180, 205), 50, 180);
+        arc(0, 0, w, h, -HALF_PI, -HALF_PI + PI * 0.25 + ax * 0.4);
+        const gEnd = PI * 0.25 + ax * 0.4;
+        stroke(random(238, 255), random(196, 214), 30, 190);
+        arc(0, 0, w, h, -HALF_PI + gEnd, HALF_PI - gEnd);
+        stroke(random(150, 200), random(180, 205), 50, 180);
+        arc(0, 0, w, h, HALF_PI - gEnd, HALF_PI);
+
+        // pointed nubs at each end, drawn as lines like the rind
+        const nubCol = [random(225, 248), random(186, 206), 28, 200];
+        stroke(...nubCol);
+        arc(0, -h / 2 + 2, 26, 34, -HALF_PI, HALF_PI * 0.2, OPEN, 24);
+        arc(0, h / 2 - 2, 26, 34, -HALF_PI * 0.2, HALF_PI, OPEN, 24);
+
+        // seeds & core along the cut faces
+        if (last < detail && (i == 0 || i == last - 1)) {
+          push();
+          noStroke();
+          fill(236, 224, 176, 230);
+          const seeds = [[28, -38, PI / 8], [34, 0, 0], [28, 38, -PI / 8]];
+          for (const [sx, sy, tilt] of seeds) {
+            push();
+            translate(sx, sy, i == last - 1 ? -4 : 4);
+            rotateZ(tilt);
+            ellipsoid(4, 9, 3);
+            pop();
+          }
+          noFill();
+          stroke(250, 246, 220, 200);
+          strokeWeight(3 * zoom);
+          line(2, -h * 0.4, 0, 2, h * 0.4, 0);
+          pop();
+        }
+        pop();
+      }
+      pop();
+    }
+
+    function keyPressed() { reseed(); }
+  </script>
+</body>
+</html>
