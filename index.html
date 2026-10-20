@@ -131,7 +131,10 @@
       c.parent('holder');
       strokeCap(SQUARE);
       zoom = height / 420;
-     
+      document.fonts.load('italic 300 32px "Gaisyr Light Italic"').finally(() => {
+        labels = phrases.map(makeLabel);
+      });
+    }
 
     function windowResized() {
       const lim = Math.min(holder.clientWidth, holder.clientHeight) || 600;
